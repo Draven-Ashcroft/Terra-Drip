@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TERRA-DRIP — Source Code</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<style>
+  :root {
+    --bg: #0b1210;
+    --panel: #101c19;
+    --accent: #35e0a5;
+    --accent-dim: #1f8f6c;
+    --text: #d7e5e0;
+    --muted: #7d9791;
+    --border: #1f322c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(circle at 20% 0%, #0f1c18 0%, #070c0a 60%);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    padding: 0 0 60px 0;
+  }
+  header {
+    padding: 40px 20px 30px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .logo {
+    font-family: 'Courier New', monospace;
+    font-size: 2.2rem;
+    font-weight: 700;
+    letter-spacing: 4px;
+    color: var(--accent);
+    text-shadow: 0 0 20px rgba(53,224,165,0.35);
+    margin: 0;
+  }
+  .tagline {
+    color: var(--muted);
+    margin-top: 8px;
+    font-size: 0.95rem;
+    letter-spacing: 1px;
+  }
+  .badges {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 18px;
+    flex-wrap: wrap;
+  }
+  .badge {
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-family: 'Courier New', monospace;
+  }
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 30px 16px;
+  }
+  .info-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 24px;
+    font-size: 0.92rem;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .info-box b { color: var(--text); }
+  .code-wrap {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+  }
+  .code-header {
+    background: #14201c;
+    padding: 10px 16px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+  }
+  pre {
+    margin: 0;
+    padding: 20px;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.55;
+  }
+  code.hljs { background: transparent !important; }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin-top: 30px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <p class="logo">TERRA-DRIP</p>
+  <p class="tagline">Modular Smart Irrigator — Full Source Code</p>
+  <div class="badges">
+    <span class="badge">Arduino Uno</span>
+    <span class="badge">SSD1306 OLED</span>
+    <span class="badge">TIP120 Driver</span>
+    <span class="badge">Watchdog-Protected</span>
+  </div>
+</header>
+
+<main>
+  <div class="info-box">
+    <b>What this does:</b> reads soil moisture every 10 seconds, and if the soil is dry
+    (below 45%), runs the pump for a 12-second pulse, then waits 15 seconds before checking
+    again. A 5-cycle safety lockout stops the system from pulsing endlessly if moisture never
+    rises (e.g. empty reservoir), and an onboard watchdog timer auto-recovers the board if it
+    ever hangs. Status, live countdowns, and moisture % are shown on a 128×64 OLED display.
+  </div>
+
+  <div class="code-wrap">
+    <div class="code-header">
+      <span>terra_drip.ino</span>
+      <span>Arduino / C++</span>
+    </div>
+    <pre><code class="language-cpp">#include &lt;Wire.h&gt;
+#include &lt;Adafruit_GFX.h&gt;
+#include &lt;Adafruit_SSD1306.h&gt;
+#include &lt;avr/wdt.h&gt;
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET   -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &amp;Wire, OLED_RESET);
+
+#define SOIL_PIN A0
+#define PUMP_PIN 2
+
+int DRY_VALUE = 1023;
+int WET_VALUE = 600;
+
+const int MOISTURE_ON_THRESHOLD   = 45;
+const unsigned long PUMP_RUN_TIME  = 12000;
+const unsigned long CHECK_INTERVAL = 10000;
+const unsigned long SOAK_TIME      = 15000;  // 15s cooldown between pulses
+const int MAX_CONSECUTIVE_CYCLES   = 5;      // 5 pulses before lockout
+const unsigned long DISPLAY_QUIET_AFTER_SWITCH = 800;
+
+bool pumpState = false;
+unsigned long pumpStartTime = 0;
+unsigned long pumpOffTime = 0;
+unsigned long lastCheck = 0;
+unsigned long lastSwitchTime = 0;
+const unsigned long READ_INTERVAL = 2000;
+
+int consecutiveCycles = 0;
+bool lockedOut = false;
+
+int readMoisturePercent() {
+  long total = 0;
+  const int samples = 5;
+  for (int i = 0; i &lt; samples; i++) {
+    total += analogRead(SOIL_PIN);
+    delay(5);
+  }
+  int raw = total / samples;
+  int percent = map(raw, DRY_VALUE, WET_VALUE, 0, 100);
+  percent = constrain(percent, 0, 100);
+  return percent;
+}
+
+void updateDisplay(int moisture) {
+  if (millis() - lastSwitchTime &lt; DISPLAY_QUIET_AFTER_SWITCH) return;
+
+  unsigned long now = millis();
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("TERRA-DRIP");
+  display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+
+  display.setTextSize(2);
+  display.setCursor(0, 20);
+  display.print("Moist:");
+  display.print(moisture);
+  display.println("%");
+
+  // Status/countdown line
+  display.setTextSize(1);
+  display.setCursor(0, 40);
+  if (lockedOut) {
+    display.println("Check pump/water!");
+  } else if (pumpState) {
+    unsigned long elapsed = now - pumpStartTime;
+    unsigned long left = (elapsed &lt; PUMP_RUN_TIME) ? (PUMP_RUN_TIME - elapsed) / 1000 : 0;
+    display.print("Watering: ");
+    display.print(left);
+    display.println("s left");
+  } else {
+    unsigned long soakElapsed = now - pumpOffTime;
+    if (soakElapsed &lt; SOAK_TIME) {
+      unsigned long left = (SOAK_TIME - soakElapsed) / 1000;
+      display.print("Next in: ");
+      display.print(left);
+      display.println("s");
+    } else {
+      display.println("Ready");
+    }
+  }
+
+  // Pump on/off line
+  display.setCursor(0, 52);
+  if (lockedOut) {
+    display.println("Pump: LOCKED");
+  } else {
+    display.print("Pump: ");
+    display.println(pumpState ? "ON" : "OFF");
+  }
+
+  display.display();
+}
+
+void setup() {
+  wdt_disable();
+  Serial.begin(9600);
+  pinMode(PUMP_PIN, OUTPUT);
+  digitalWrite(PUMP_PIN, HIGH);   // HIGH = pump OFF
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED init failed");
+    while (true) { delay(1000); }
+  }
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.display();
+
+  wdt_enable(WDTO_2S);
+}
+
+void loop() {
+  wdt_reset();
+  unsigned long now = millis();
+
+  if (pumpState &amp;&amp; (now - pumpStartTime &gt;= PUMP_RUN_TIME)) {
+    pumpState = false;
+    pumpOffTime = now;
+    lastSwitchTime = now;
+    digitalWrite(PUMP_PIN, HIGH);
+    Serial.println("Pump pulse complete - OFF");
+  }
+
+  if (now - lastCheck &gt;= CHECK_INTERVAL) {
+    lastCheck = now;
+    int moisture = readMoisturePercent();
+
+    Serial.print("Moisture: "); Serial.print(moisture);
+    Serial.print("%  Pump: "); Serial.println(pumpState ? "ON" : "OFF");
+
+    bool soakOver = (now - pumpOffTime &gt;= SOAK_TIME);
+
+    if (!pumpState &amp;&amp; !lockedOut &amp;&amp; soakOver &amp;&amp; moisture &lt; MOISTURE_ON_THRESHOLD) {
+      pumpState = true;
+      pumpStartTime = now;
+      lastSwitchTime = now;
+      digitalWrite(PUMP_PIN, LOW);
+      consecutiveCycles++;
+      Serial.println("Soil dry - starting pump pulse");
+
+      if (consecutiveCycles &gt;= MAX_CONSECUTIVE_CYCLES) {
+        lockedOut = true;
+        pumpState = false;
+        digitalWrite(PUMP_PIN, HIGH);
+        Serial.println("SAFETY LOCKOUT: moisture not rising after several pulses");
+      }
+    }
+
+    if (moisture &gt;= MOISTURE_ON_THRESHOLD) {
+      consecutiveCycles = 0;
+      lockedOut = false;
+    }
+  }
+
+  static unsigned long lastDisplay = 0;
+  if (now - lastDisplay &gt;= 1000) {
+    lastDisplay = now;
+    updateDisplay(readMoisturePercent());
+  }
+}
+</code></pre>
+  </div>
+
+  <footer>TerraDrip — Modular Smart Irrigator · Built &amp; documented for school science exhibition</footer>
+</main>
+
+<script>hljs.highlightAll();</script>
+</body>
+</html>
